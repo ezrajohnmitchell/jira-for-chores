@@ -1,0 +1,11 @@
+version: '0.1'
+
+services: 
+  postgres:
+    image: postgres:latest
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRESS_DB: user_db
