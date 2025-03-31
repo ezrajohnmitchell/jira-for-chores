@@ -1,7 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 
-use super::organization::{AccountLink, AccountType, OrganizationId, Tag, TagId};
-use super::{account::AccountId, task::CatalogueTaskId};
+use crate::catalogue::CatalogueTaskId;
+use crate::shared::account::AccountId;
+
+use super::organization::{AccountType, OrganizationId, TagId};
 
 use super::task::TaskId;
 
@@ -38,7 +40,6 @@ pub enum OrganizationEvent {
     Created {
         id: OrganizationId,
         name: String,
-        owner: AccountId,
     },
     TagAdded {
         organization_id: OrganizationId,

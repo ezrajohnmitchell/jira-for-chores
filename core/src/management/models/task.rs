@@ -1,22 +1,33 @@
 use chrono::{DateTime, Duration, TimeDelta, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::types::Uuid;
 use thiserror::Error;
 use ulid::Ulid;
 
-use super::{account::AccountId, events::TaskEvent};
+use crate::{catalogue::CatalogueTaskId, shared::account::AccountId};
 
-#[derive(Debug, Clone, PartialEq, Copy, Default)]
-pub struct CatalogueTaskId;
+use super::events::TaskEvent;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
 pub struct TaskId(pub Ulid);
 
 impl TaskId {
     pub fn new() -> Self {
         TaskId(Ulid::new())
     }
+
+    pub fn ulid(&self) -> Ulid {
+        self.0
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+impl From<Uuid> for TaskId {
+    fn from(value: Uuid) -> Self {
+        Self(value.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskInstance {
     id: TaskId,
     catalogue_id: CatalogueTaskId,
@@ -34,7 +45,7 @@ impl TaskInstance {
         expires: Option<DateTime<Utc>>,
         task: CatalogueTaskId,
         status: TaskStatus,
-    ) -> Result<TaskInstance, TaskError> {
+    ) -> Result<TaskInstance, TaskDomainError> {
         Ok(TaskInstance {
             id,
             assigned_to,
@@ -45,7 +56,7 @@ impl TaskInstance {
         })
     }
 
-    pub fn into_create_event(&self) -> TaskEvent {
+    pub fn create(&self) -> TaskEvent {
         TaskEvent::Assigned {
             id: self.id,
             assigned_to: self.assigned_to,
@@ -55,48 +66,61 @@ impl TaskInstance {
         }
     }
 
-    pub fn finish(&self) -> Result<TaskEvent, TaskError> {
+    pub fn finish(&self, requesting_account: AccountId) -> Result<TaskEvent, TaskDomainError> {
+        if requesting_account != self.assigned_to {
+            return Err(TaskDomainError::NotAuthorized);
+        }
         match self.status {
             TaskStatus::Pending => Ok(TaskEvent::Finished { task_id: self.id }),
             TaskStatus::Finished | TaskStatus::Rejected | TaskStatus::Expired => {
-                Err(TaskError::StatusNotApplicable)
+                Err(TaskDomainError::StatusNotApplicable)
             }
         }
     }
 
-    pub fn reject(&self) -> Result<TaskEvent, TaskError> {
+    pub fn reject(&self, requesting_account: AccountId) -> Result<TaskEvent, TaskDomainError> {
+        if requesting_account != self.assigned_to {
+            return Err(TaskDomainError::NotAuthorized);
+        }
         match self.status {
             TaskStatus::Pending => Ok(TaskEvent::Rejected {
                 task_id: self.id,
                 assigned_by: self.assigned_by,
             }),
             TaskStatus::Finished | TaskStatus::Rejected | TaskStatus::Expired => {
-                Err(TaskError::StatusNotApplicable)
+                Err(TaskDomainError::StatusNotApplicable)
             }
         }
     }
 
-    pub fn expire(&self) -> Result<TaskEvent, TaskError> {
+    pub fn expire(&self) -> Result<TaskEvent, TaskDomainError> {
         match self.status {
             TaskStatus::Pending => Ok(TaskEvent::Expired {
                 task_id: self.id,
                 assigned_by: self.assigned_by,
             }),
             TaskStatus::Finished | TaskStatus::Rejected | TaskStatus::Expired => {
-                Err(TaskError::StatusNotApplicable)
+                Err(TaskDomainError::StatusNotApplicable)
             }
         }
     }
 
-    pub fn add_time(&self, time: Duration) -> Result<TaskEvent, TaskError> {
+    pub fn add_time(
+        &self,
+        requesting_account: AccountId,
+        time: Duration,
+    ) -> Result<TaskEvent, TaskDomainError> {
+        if requesting_account != self.assigned_by {
+            return Err(TaskDomainError::NotAuthorized);
+        }
         match self.status {
-            TaskStatus::Expired => Err(TaskError::StatusNotApplicable),
+            TaskStatus::Expired => Err(TaskDomainError::StatusNotApplicable),
             _ => match self.expires {
                 Some(_) => Ok(TaskEvent::TimeAdded {
                     task_id: self.id,
                     duration: time,
                 }),
-                None => Err(TaskError::TaskDoesNotExpire),
+                None => Err(TaskDomainError::TaskDoesNotExpire),
             },
         }
     }
@@ -155,9 +179,11 @@ pub enum TimeRequestAction {
 }
 
 #[derive(Error, Debug)]
-pub enum TaskError {
+pub enum TaskDomainError {
     #[error("action cannot be performed on task status")]
     StatusNotApplicable,
     #[error("task does not have an expiration")]
     TaskDoesNotExpire,
+    #[error("not authorized for action")]
+    NotAuthorized,
 }

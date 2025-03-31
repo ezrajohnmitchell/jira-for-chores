@@ -8,4 +8,3 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin123
-      POSTGRESS_DB: user_db

@@ -1,21 +1,35 @@
 use std::{collections::HashSet, vec};
 
+use chrono::{DateTime, Days, Utc};
 use rand::seq::IndexedRandom;
+use serde::{Deserialize, Serialize};
+use sqlx::types::Uuid;
 use thiserror::Error;
 use ulid::Ulid;
 
+use crate::{catalogue::CatalogueTaskId, shared::account::AccountId};
+
 use super::{
-    account::AccountId,
     events::OrganizationEvent,
-    task::{CatalogueTaskId, TaskError, TaskId, TaskInstance, TaskStatus::Pending},
+    task::{TaskDomainError, TaskId, TaskInstance, TaskStatus::Pending},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Hash, Default, Deserialize, Serialize)]
 pub struct OrganizationId(pub Ulid);
 
 impl OrganizationId {
     pub fn new() -> OrganizationId {
         OrganizationId(Ulid::new())
+    }
+
+    pub fn ulid(&self) -> Ulid {
+        self.0
+    }
+}
+
+impl From<Uuid> for OrganizationId {
+    fn from(value: Uuid) -> Self {
+        Self(value.into())
     }
 }
 
@@ -28,6 +42,14 @@ pub struct Organization {
 }
 
 impl Organization {
+    pub fn id(&self) -> &OrganizationId {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn new(
         id: OrganizationId,
         name: String,
@@ -42,21 +64,39 @@ impl Organization {
         })
     }
 
-    pub fn create(
-        name: String,
-        account: AccountId,
-    ) -> Result<Vec<OrganizationEvent>, OrganizationError> {
-        Ok(vec![
-            OrganizationEvent::Created {
-                id: OrganizationId::new(),
-                name: name,
-                owner: account,
-            },
-            OrganizationEvent::AccountLinked {
+    pub fn create(name: String, account: AccountId) -> Result<Organization, OrganizationError> {
+        Ok(Organization {
+            id: OrganizationId::new(),
+            name,
+            tags: Vec::new(),
+            linked_accounts: vec![AccountLink {
                 account,
                 account_type: AccountType::Owner,
-            },
-        ])
+                tasks: Vec::new(),
+            }],
+        })
+    }
+
+    pub fn into_create_event(&self) -> Result<Vec<OrganizationEvent>, OrganizationError> {
+        if self.linked_accounts.len() == 0 {
+            return Err(OrganizationError::CannotCreate);
+        }
+        let mut links: Vec<OrganizationEvent> = self
+            .linked_accounts
+            .iter()
+            .map(|link| OrganizationEvent::AccountLinked {
+                account: link.account,
+                account_type: link.account_type,
+            })
+            .collect();
+        links.splice(
+            0..0,
+            vec![OrganizationEvent::Created {
+                id: self.id,
+                name: self.name.clone(),
+            }],
+        );
+        Ok(links)
     }
 
     pub fn add_tag(
@@ -164,9 +204,9 @@ impl Organization {
     pub fn assign_tasks_to_tags(
         &self,
         requesting_account: &AccountId,
-        tags: HashSet<TagId>,
-        tasks: Vec<CatalogueTaskId>,
-        assignment_type: TaskAssignmentType,
+        tags: &HashSet<TagId>,
+        tasks: &Vec<CatalogueTaskId>,
+        assignment_type: &TaskAssignmentType,
     ) -> Result<Vec<TaskInstance>, OrganizationError> {
         //verify requesting account is an editor for all groups requested
         let tags: Vec<&Tag> = self
@@ -214,7 +254,7 @@ impl Organization {
         match assignment_type {
             TaskAssignmentType::Random => {
                 let mut rng = rand::rng();
-                let out: Result<Vec<TaskInstance>, TaskError> = tasks
+                let out: Result<Vec<TaskInstance>, TaskDomainError> = tasks
                     .iter()
                     .map(|task| {
                         let worker = workers.choose(&mut rng).unwrap();
@@ -256,7 +296,7 @@ impl Organization {
                                 worker.0.clone(),
                                 *requesting_account,
                                 None,
-                                task,
+                                *task,
                                 Pending,
                             )?;
                             out.push(task_newd);
@@ -293,7 +333,7 @@ impl Organization {
                                 worker.0.clone(),
                                 *requesting_account,
                                 None,
-                                task,
+                                *task,
                                 Pending,
                             )?;
                             out.push(task_newd);
@@ -306,7 +346,7 @@ impl Organization {
                 Ok(out)
             }
             TaskAssignmentType::Copy => {
-                let output: Result<Vec<TaskInstance>, TaskError> = tasks
+                let output: Result<Vec<TaskInstance>, TaskDomainError> = tasks
                     .iter()
                     .flat_map(|&task| {
                         let mut out = Vec::new();
@@ -327,14 +367,14 @@ impl Organization {
                 Ok(output?)
             }
             TaskAssignmentType::ToAccount { account } => {
-                match workers.iter().find(|&worker| *worker == account) {
+                match workers.iter().find(|&worker| *worker == *account) {
                     Some(_) => {
-                        let output: Result<Vec<TaskInstance>, TaskError> = tasks
+                        let output: Result<Vec<TaskInstance>, TaskDomainError> = tasks
                             .iter()
                             .map(|task| {
                                 TaskInstance::new(
                                     TaskId::new(),
-                                    account,
+                                    *account,
                                     *requesting_account,
                                     None,
                                     task.clone(),
@@ -355,7 +395,7 @@ impl Organization {
         &self,
         requesting_account: AccountId,
         worker: AccountId,
-        tasks: Vec<CatalogueTaskId>,
+        tasks: &Vec<CatalogueTaskId>,
     ) -> Result<Vec<TaskInstance>, OrganizationError> {
         let link = self
             .linked_accounts
@@ -364,7 +404,7 @@ impl Organization {
             .ok_or(OrganizationError::NotInOrg)?;
 
         if worker == requesting_account || link.account_type != AccountType::Worker {
-            let out: Result<Vec<TaskInstance>, TaskError> = tasks
+            let out: Result<Vec<TaskInstance>, TaskDomainError> = tasks
                 .iter()
                 .map(|task| {
                     TaskInstance::new(
@@ -441,8 +481,35 @@ pub enum AccountType {
     Owner,
 }
 
+#[derive(Debug, Clone)]
+pub struct RepeatingTask {
+    id: Ulid,
+    last_assigned: DateTime<Utc>,
+    requesting_account: AccountId,
+    period: Days,
+    assigned_to: AssignmentType,
+    tasks: Vec<CatalogueTaskId>,
+}
+
+impl PartialEq for RepeatingTask {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+#[derive(Debug, Clone)]
+enum AssignmentType {
+    Account(AccountId),
+    Tags {
+        tags: HashSet<TagId>,
+        assignment_type: TaskAssignmentType,
+    },
+}
+
 #[derive(Error, Debug)]
 pub enum OrganizationError {
+    #[error("cannot create organization")]
+    CannotCreate,
     #[error("tag already exists")]
     TagAlreadyExists,
     #[error("tag does not exist")]
@@ -450,11 +517,13 @@ pub enum OrganizationError {
     #[error("no accounts available to assign in tags")]
     NoWorkers,
     #[error("error creating task")]
-    TaskError(#[from] TaskError),
+    TaskError(#[from] TaskDomainError),
     #[error("not authorized for tags")]
     NotAuthorized,
     #[error("requesting account is not part of this organization")]
     NotInOrg,
+    #[error("repeating task date is invalid")]
+    InvalidRepeatingTask,
 }
 
 #[derive(Debug, Clone)]
