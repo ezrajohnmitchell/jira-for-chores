@@ -16,12 +16,19 @@ A task management app meant for use in a household. The starting implementation 
 ```
 
 ## Building locally
-this project uses sqlx compile time query checking, ensure that a database with migrations is avaiable by running before build
+this project uses sqlx compile time query checking, to change or add queries an active database connection is required. Use the following to run a postgres container and configure sqlx
 
 ```bash
 docker compose -f db.yml up
 ```
+then set the environment variable `DATABASE_URL=postgres://admin:admin123@localhost/local`
 ```bash
 sqlx migration run
 ```
-Working on enabling offline mode once more of the app is finished
+At this point builds will check the queries against the running database
+
+
+to reenable offline building run 
+```bash
+cargo sqlx prepare --workspace
+```

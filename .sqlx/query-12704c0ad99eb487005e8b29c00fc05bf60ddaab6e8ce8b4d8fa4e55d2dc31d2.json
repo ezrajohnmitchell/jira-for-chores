@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO CATALOGUE_TASK (id, organization, created_by, title, description)\n            VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "12704c0ad99eb487005e8b29c00fc05bf60ddaab6e8ce8b4d8fa4e55d2dc31d2"
+}
